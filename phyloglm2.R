@@ -12,8 +12,22 @@ library(mcmcplots)
 library(future)
 
 setwd("~/Migration")
-data <- read.csv("Data/IUCNdata_updated_July2025.csv", header=TRUE,
+data <- read.csv("Data/IUCNdata_updated_Taxonomy_030925.csv", header=TRUE,
                  na.strings="", stringsAsFactors=FALSE)
+
+data <- data %>%
+  mutate(
+    Hem3 = case_when(
+      Hemisphere %in% c(1, 2) ~ "Breed_North_only",   # combine 1 & 2
+      Hemisphere == 3         ~ "Present_South_only", # keep 3
+      Hemisphere %in% c(4, 5) ~ "Breed_Both",         # combine 4 & 5
+      TRUE ~ NA_character_
+    ),
+    Hem3 = factor(Hem3, levels = c("Breed_North_only", "Present_South_only", "Breed_Both"))
+  ) %>%
+  filter(!is.na(Hem3))
+
+data$Hem3n <- as.numeric(data$Hem3)
 
 # Recode flyways
 data <- data %>% 
@@ -31,12 +45,12 @@ data <- data %>%
     flyway_combo = factor(flyway_combo)
   ) %>%
   filter(flyway_combo != "Am_Af",
-         !(Hemisphere == 2 & flyway_combo %in% c("Am_As","Af_As","Am_Af_As"))) %>%
+         !(Hem3n == 2 & flyway_combo %in% c("Am_As","Af_As","Am_Af_As"))) %>%
   droplevels()
-data <- select(data, -c(9:16, 20:27))
+data <- select(data, -c(19:25))
 
 data %>% 
-  count(Hemisphere, flyway_combo) %>% 
+  count(Hem3, flyway_combo) %>% 
   tidyr::pivot_wider(names_from = flyway_combo, values_from = n, values_fill = 0)
 
 # Seems sensible to collapse --------------------------------------------------#
@@ -60,8 +74,14 @@ data %>%
 
 #------------------------------------------------------------------------------#
 
+## Sort decline
+data$populationTrend <- as.factor(data$populationTrend)
+summary(data$populationTrend)
+data <- filter(data, populationTrend == "Decreasing" | populationTrend == "Increasing" | populationTrend == "Stable")
+data$decline <- ifelse(data$populationTrend == "Decreasing", 1, 0)
+
 # factor categorical predictors
-allFactors <- c("decline","migratory","Hemisphere","Flyway",
+allFactors <- c("decline","migratory","Hemisphere", "Hem3n",
                 "American","AfroPal","Asian", "flyway_combo")#, "HemFly6", "HemFly4")
 
 data[allFactors] <- lapply(data[allFactors], factor)
@@ -76,30 +96,34 @@ data$EOO_log_cent  <- scale(data$EOO_log, center=TRUE, scale=FALSE)
 remove <- which(is.na(data$EOO))
 data <- data[-remove,]
 
+data %>% 
+  count(Hem3, flyway_combo) %>% 
+  tidyr::pivot_wider(names_from = flyway_combo, values_from = n, values_fill = 0)
+
 # Label rows
 data$rowID <- paste0("sp_", seq_len(nrow(data)))
 names(data)
 
 # Read tree
-#tree <- read.tree("Data/ult_5k_tree.trees")
-tree <- readRDS("Data/NewFixedTree.rds")
-#eps  <- 1e-8
+tree <- read.tree("Data/ult_5k_tree.trees")
+tree <- readRDS("Data/NewFixedTree_030925.rds")
+eps  <- 1e-8
 
-#for(i in seq_len(nrow(data))) {
-#  newName <- data$rowID[i]
-#  anchor  <- data$animal[i]
-#  tree <- bind.tip(tree,
-#                   tip.label = newName,
-#                   where     = which(tree$tip.label == anchor),
-#                   position  = 0)
-#}
+for(i in seq_len(nrow(data))) {
+  newName <- data$rowID[i]
+  anchor  <- data$animal[i]
+  tree <- bind.tip(tree,
+                   tip.label = newName,
+                   where     = which(tree$tip.label == anchor),
+                   position  = 0)
+}
 
 # now jitter so no zero‐length edges remain
-#tree$edge.length[tree$edge.length <= 0] <- eps
+tree$edge.length[tree$edge.length <= 0] <- eps
 
-#keep_sp <- intersect(data$rowID, tree$tip.label)
-#tree    <- drop.tip(tree, setdiff(tree$tip.label, keep_sp))
-#saveRDS(tree, "Data/NewFixedTree.rds")
+keep_sp <- intersect(data$rowID, tree$tip.label)
+tree    <- drop.tip(tree, setdiff(tree$tip.label, keep_sp))
+saveRDS(tree, "Data/NewFixedTree_030925.rds")
 rownames(data) <- data$rowID
 
 # allow up to 2 GiB of globals
@@ -146,7 +170,7 @@ summary(fit_phylo)
 # Try with combined Hem/Flyway
 
 data <- data %>%
-  mutate(HemFly = interaction(Hemisphere, flyway_combo, sep = "_", drop = TRUE))
+  mutate(HemFly = interaction(Hem3n, flyway_combo, sep = "_", drop = TRUE))
 
 # Check numbers...
 with(data, table(migratory, HemFly))
@@ -167,7 +191,7 @@ fit_phyloHemFly <- phyloglm(
   method          = "logistic_MPLE",
   btol            = 50,
   log.alpha.bound = 4,
-  boot            = 5
+  boot            = 0
 )
 
 summary(fit_phyloHemFly)
@@ -202,7 +226,7 @@ m1$coefficients
 startB <- m1$coefficients
 startA <- 0.5
 
-plan(multisession, workers = 20)
+plan(multisession, workers = 50)
 plan()
 
 fit_phyloHemFlyEOO <- phyloglm(
@@ -212,7 +236,7 @@ fit_phyloHemFlyEOO <- phyloglm(
   method          = "logistic_MPLE",
   btol            = 20,
   log.alpha.bound = 4,
-  boot            = 5000,
+  boot            = 1000,
   start.beta = startB,
   start.alpha = startA,
 )
