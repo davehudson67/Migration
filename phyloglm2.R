@@ -9,6 +9,7 @@ library(Matrix)
 library(tidyverse)
 library(coda)
 library(mcmcplots)
+library(future)
 
 setwd("~/Migration")
 data <- read.csv("Data/IUCNdata_updated_July2025.csv", header=TRUE,
@@ -31,7 +32,7 @@ data <- data %>%
   ) %>%
   filter(flyway_combo != "Am_Af",
          !(Hemisphere == 2 & flyway_combo %in% c("Am_As","Af_As","Am_Af_As"))) %>%
-droplevels()
+  droplevels()
 data <- select(data, -c(9:16, 20:27))
 
 data %>% 
@@ -102,7 +103,9 @@ tree <- readRDS("Data/NewFixedTree.rds")
 rownames(data) <- data$rowID
 
 # allow up to 2 GiB of globals
-options(future.globals.maxSize = 16 * 1024^3)
+options(future.globals.maxSize = +Inf)
+
+#------------------------------------------------------------------------------#
 
 m1 <- glm(decline ~ migratory * Hemisphere * flyway_combo + EOO_log_cent, family = binomial, data)
 m1$coefficients
@@ -164,27 +167,54 @@ fit_phyloHemFly <- phyloglm(
   method          = "logistic_MPLE",
   btol            = 50,
   log.alpha.bound = 4,
-  boot            = 0
+  boot            = 5
 )
 
 summary(fit_phyloHemFly)
 saveRDS(fit_phyloHemFly, "Outputs/FitPhyloHemFly.rds")
+#------------------------------------------------------------------------------#
+#Fit in parallel...
+library(future)
+
+plan(multisession, workers = 50)
+#options(future.globals.maxSize = 8 * 1024^3)
+
+# Wrap the call to reduce what gets exported to workers
+run_phylo <- function(dat, tr, K){
+  phylolm::phyloglm(
+    decline ~ migratory * HemFly + EOO_log_cent,
+    data = dat, phy = tr,
+    method = "logistic_MPLE",
+    btol = 50, log.alpha.bound = 4,
+    boot = K,
+    save = TRUE,
+    full.matrix = TRUE
+  )
+}
+
+fit_phyloHemFly <- run_phylo(data, tree, 1000)
+saveRDS(fit_phyloHemFly , "Outputs/fit_phyloHemFlyEOO_2AmOnly_1000.rds")
 
 #------------------------------------------------------------------------------#
-# Fit with EOO and no bootstrap
+# Fit with EOO
 m1 <- glm(decline ~ migratory * HemFly + EOO_log_cent, family = binomial, data)
 m1$coefficients
 startB <- m1$coefficients
 startA <- 0.5
+
+plan(multisession, workers = 20)
+plan()
 
 fit_phyloHemFlyEOO <- phyloglm(
   decline ~ migratory * HemFly + EOO_log_cent,
   data            = data,
   phy             = tree,
   method          = "logistic_MPLE",
-  btol            = 50,
+  btol            = 20,
   log.alpha.bound = 4,
-  boot            = 0
+  boot            = 5000,
+  start.beta = startB,
+  start.alpha = startA,
 )
 
 summary(fit_phyloHemFlyEOO)
@@ -211,11 +241,9 @@ for (ref in refs) {
                         data            = data,
                         phy             = tree,
                         method          = "logistic_MPLE",
-                        btol            = 20,
+                        btol            = 50,
                         log.alpha.bound = 4,
-                        boot            = 0,
-                        start.beta = coefs,
-                        start.alpha = 0.5)
+                        boot            = 10)
   
   # Save model output
   saveRDS(fit_phylo,
@@ -227,7 +255,7 @@ for (ref in refs) {
 
 #------------------------------------------------------------------------------
 # relevel to Hem 2 - Am Only
-data$HemFly <- relevel(data$HemFly, ref = "3_Am_only")
+data$HemFly <- relevel(data$HemFly, ref = "2_Am_only")
 
 # Fit with EOO and bootstrap
 m1 <- glm(decline ~ EOO_log_cent, family = binomial, data)
