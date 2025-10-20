@@ -105,70 +105,47 @@ data$rowID <- paste0("sp_", seq_len(nrow(data)))
 names(data)
 
 # Read tree
-tree <- read.tree("Data/ult_5k_tree.trees")
+#tree <- read.tree("Data/ult_5k_tree.trees")
 tree <- readRDS("Data/NewFixedTree_030925.rds")
-eps  <- 1e-8
+tree$edge.length <- tree$edge.length / max(nodeHeights(tree))
 
-for(i in seq_len(nrow(data))) {
-  newName <- data$rowID[i]
-  anchor  <- data$animal[i]
-  tree <- bind.tip(tree,
-                   tip.label = newName,
-                   where     = which(tree$tip.label == anchor),
-                   position  = 0)
-}
+summary(tree)
+#eps  <- 1e-8
+
+#for(i in seq_len(nrow(data))) {
+#  newName <- data$rowID[i]
+#  anchor  <- data$animal[i]
+#  tree <- bind.tip(tree,
+#                   tip.label = newName,
+#                   where     = which(tree$tip.label == anchor),
+#                   position  = 0)
+#}
 
 # now jitter so no zero‐length edges remain
-tree$edge.length[tree$edge.length <= 0] <- eps
+#tree$edge.length[tree$edge.length <= 0] <- eps
 
-keep_sp <- intersect(data$rowID, tree$tip.label)
-tree    <- drop.tip(tree, setdiff(tree$tip.label, keep_sp))
-saveRDS(tree, "Data/NewFixedTree_030925.rds")
+#keep_sp <- intersect(data$rowID, tree$tip.label)
+#tree    <- drop.tip(tree, setdiff(tree$tip.label, keep_sp))
+#saveRDS(tree, "Data/NewFixedTree_030925.rds")
 rownames(data) <- data$rowID
 
 # allow up to 2 GiB of globals
 options(future.globals.maxSize = +Inf)
 
 #------------------------------------------------------------------------------#
-
-m1 <- glm(decline ~ migratory * Hemisphere * flyway_combo + EOO_log_cent, family = binomial, data)
+m1 <- glm(decline ~ migratory, family = binomial, data)
 m1$coefficients
-m1$coefficients[is.na(m1$coefficients)] <- 1
-startB <- m1$coefficients
-startA <- 0.5
+summary(m1)
 
-# Fit phylo logistic regression
-fit_phylo <- phyloglm(
-  decline ~ migratory * Hemisphere * flyway_combo + EOO_log_cent,
-  data   = data,
-  phy    = tree,
-  method = "logistic_MPLE",
-  btol   = 40,
-  log.alpha.bound = 4,
-  start.beta = startB,
-  start.alpha = startA,
-  boot = 1
-)
+m1a <- glm(decline ~ migratory + EOO_log_cent, family = binomial, data)
+summary(m1a)
 
-summary(fit_phylo)
-#-----------------------------------------------------------------------------#
-# Drop the 3 way interaction term
+m1b <- glm(decline ~ migratory * EOO_log_cent, family = binomial, data)
+summary(m1b)
 
-#fit_phylo2 <- phyloglm(
-#  decline ~ migratory * Hemisphere + migratory * flyway2 + Hemisphere * flyway2 + EOO_log_cent,
-#  data            = data,
-#  phy             = tree,
-#  method          = "logistic_MPLE",
-#  btol            = 50,
-#  log.alpha.bound = 4,
-#  boot            = 100
-#)
-#summary(fit_phylo2)
-#saveRDS(fit_phylo2, "FitPhylo2.rds")
 
 #-----------------------------------------------------------------------------#
 # Try with combined Hem/Flyway
-
 data <- data %>%
   mutate(HemFly = interaction(Hem3n, flyway_combo, sep = "_", drop = TRUE))
 
@@ -176,74 +153,169 @@ data <- data %>%
 with(data, table(migratory, HemFly))
 
 # Change ref category
-data$HemFly <- relevel(data$HemFly, ref = "2_Am_only")
+data$HemFly <- relevel(data$HemFly, ref = "1_Am_only")
+data$HemFly <- factor(data$HemFly, levels = c("1_Am_only", 
+                                              "1_Af_only",
+                                              "1_As_only",
+                                              "1_Af_As",
+                                              "1_Am_As",
+                                              "1_Am_Af_As",
+                                              "2_Am_only",
+                                             "2_Af_only",
+                                             "2_As_only",
+                                              "3_Am_only",
+                                              "3_Af_only",
+                                              "3_As_only",
+                                              "3_Af_As",
+                                             "3_Am_As",
+                                             "3_Am_Af_As"))
 
-# Fit with no EOO and no bootstrap
-m1 <- glm(decline ~ migratory * HemFly, family = binomial, data)
-m1$coefficients
-startB <- m1$coefficients
-startA <- 0.5
+m2 <- glm(decline ~ HemFly:migratory - 1, family = binomial, data)
+m2$coefficients
+summary(m2)
 
-fit_phyloHemFly <- phyloglm(
-  decline ~ migratory * HemFly,
-  data            = data,
-  phy             = tree,
-  method          = "logistic_MPLE",
-  btol            = 50,
-  log.alpha.bound = 4,
-  boot            = 0
-)
+coefs <- coef(m2)
+vc    <- vcov(m2)
+se    <- sqrt(diag(vc))
 
-summary(fit_phyloHemFly)
-saveRDS(fit_phyloHemFly, "Outputs/FitPhyloHemFly.rds")
-#------------------------------------------------------------------------------#
+wald <- tibble(
+  Cell = names(coefs),
+  logit = unname(coefs),
+  se    = se
+) %>%
+  mutate(
+    lo_logit = logit - 1.96*se,
+    hi_logit = logit + 1.96*se,
+    p_med    = plogis(logit),
+    p_lo95   = plogis(lo_logit),
+    p_hi95   = plogis(hi_logit)
+  )
+
+wald <- wald %>%
+  tidyr::separate(Cell, into = c("HemFly","Migratory"), sep = ":", remove = FALSE) %>%
+  mutate(
+    HemFly = sub("^HemFly", "", HemFly),  # remove "HemFly" prefix
+    HemFly = factor(HemFly, levels = levels(data$HemFly)), # keep ordering
+    Migratory = sub("^migratory", "", Migratory),
+    Migratory = ifelse(Migratory %in% c("0","1"),
+                       ifelse(Migratory=="1","Migrant","Resident"),
+                       Migratory),
+    Migratory = factor(Migratory, levels = c("Resident", "Migrant"))
+  )
+
+ggplot(wald, aes(x = p_med, y = HemFly, colour = Migratory)) +
+  geom_linerange(aes(xmin = p_lo95, xmax = p_hi95),
+                 position = position_dodge(width = 0.6)) +
+  geom_point(position = position_dodge(width = 0.6), size = 2.6) +
+  scale_x_continuous(labels = scales::label_percent(accuracy = 1)) +
+  labs(x = "Pr(decline)", y = "Region (HemFly)",
+       title = "GLM estimates with Wald 95% CIs") +
+  theme_bw(base_size = 12)
+
+##------------------------------------------------------------------------------
+# decline ~ HemFly:migratory + EOO - 1
+
+m2a <- glm(decline ~ HemFly:migratory + EOO_log_cent - 1, family = binomial, data)
+m2a$coefficients
+summary(m2a)
+
+coefs <- coef(m2a)[-1]
+vc    <- vcov(m2a)
+se    <- sqrt(diag(vc))[-1]
+
+wald <- tibble(
+  Cell = names(coefs),
+  logit = unname(coefs),
+  se    = se
+) %>%
+  mutate(
+    lo_logit = logit - 1.96*se,
+    hi_logit = logit + 1.96*se,
+    p_med    = plogis(logit),
+    p_lo95   = plogis(lo_logit),
+    p_hi95   = plogis(hi_logit)
+  )
+
+wald <- wald %>%
+  tidyr::separate(Cell, into = c("HemFly","Migratory"), sep = ":", remove = FALSE) %>%
+  mutate(
+    HemFly = sub("^HemFly", "", HemFly),  # remove "HemFly" prefix
+    HemFly = factor(HemFly, levels = levels(data$HemFly)), # keep ordering
+    Migratory = sub("^migratory", "", Migratory),
+    Migratory = ifelse(Migratory %in% c("0","1"),
+                       ifelse(Migratory=="1","Migrant","Resident"),
+                       Migratory),
+    Migratory = factor(Migratory, levels = c("Resident", "Migrant"))
+  )
+
+ggplot(wald, aes(x = p_med, y = HemFly, colour = Migratory)) +
+  geom_linerange(aes(xmin = p_lo95, xmax = p_hi95),
+                 position = position_dodge(width = 0.6)) +
+  geom_point(position = position_dodge(width = 0.6), size = 2.6) +
+  scale_x_continuous(labels = scales::label_percent(accuracy = 1)) +
+  labs(x = "Pr(decline)", y = "Region (HemFly)",
+       title = "GLM estimates with Wald 95% CIs",
+       subtitle = "decline ~ HemFly:migratory + EOO - 1") +
+  theme_bw(base_size = 12)
+
+#-------------------------------------------------------------------------------
+# decline ~ migratory * Hemfly with phylo signal
 #Fit in parallel...
-library(future)
-
 plan(multisession, workers = 50)
-#options(future.globals.maxSize = 8 * 1024^3)
+
+m3 <- glm(decline ~ migratory * HemFly, family = binomial, data)
+m3$coefficients
+startB <- m3$coefficients
+startA <- 0.5
 
 # Wrap the call to reduce what gets exported to workers
-run_phylo <- function(dat, tr, K){
-  phylolm::phyloglm(
-    decline ~ migratory * HemFly + EOO_log_cent,
-    data = dat, phy = tr,
-    method = "logistic_MPLE",
-    btol = 50, log.alpha.bound = 4,
-    boot = K,
-    save = TRUE,
-    full.matrix = TRUE
+fit_phyloHemFly <- phyloglm(
+  decline ~ migratory * HemFly,
+  data = data, phy = tree,
+  method = "logistic_MPLE",
+  btol = 50, 
+  log.alpha.bound = 4,
+  boot = 1000,
+  save = TRUE,
+  #full.matrix = TRUE,
+  start.beta = startB,
+  start.alpha = startA
   )
-}
 
-fit_phyloHemFly <- run_phylo(data, tree, 1000)
-saveRDS(fit_phyloHemFly , "Outputs/fit_phyloHemFlyEOO_2AmOnly_1000.rds")
+saveRDS(fit_phyloHemFly , "Outputs/fit_phyloHemFly_1AmOnly_1000_scaledT.rds")
 
-#------------------------------------------------------------------------------#
-# Fit with EOO
-m1 <- glm(decline ~ migratory * HemFly + EOO_log_cent, family = binomial, data)
-m1$coefficients
-startB <- m1$coefficients
+#-------------------------------------------------------------------------------
+# decline ~ migratory * Hemfly + EOO with phylo signal
+#Fit in parallel...
+plan(multisession, workers = 50)
+
+m4 <- glm(decline ~ migratory * HemFly + EOO_log_cent, family = binomial, data)
+m4$coefficients
+startB <- m4$coefficients
 startA <- 0.5
 
-plan(multisession, workers = 50)
-plan()
-
+# Wrap the call to reduce what gets exported to workers
 fit_phyloHemFlyEOO <- phyloglm(
   decline ~ migratory * HemFly + EOO_log_cent,
-  data            = data,
-  phy             = tree,
-  method          = "logistic_MPLE",
-  btol            = 20,
+  data = data, phy = tree,
+  method = "logistic_MPLE",
+  btol = 50, 
   log.alpha.bound = 4,
-  boot            = 1000,
+  boot = 1000,
+  save = TRUE,
+  #full.matrix = TRUE,
   start.beta = startB,
-  start.alpha = startA,
+  start.alpha = startA
 )
 
+saveRDS(fit_phyloHemFlyEOO , "Outputs/fit_phyloHemFlyEOO_1AmOnly_1000_scaledT.rds")
 summary(fit_phyloHemFlyEOO)
-saveRDS(fit_phyloHemFlyEOO, "Outputs/FitPhyloHemFlyEOO.rds")
+fit2 <- readRDS("Outputs/fit_phyloHemFlyEOO_1AmOnly_1000_scaledT.rds")
+summary(fit2)
 
+fit_phyloHemFlyEOO$coefficients
+fit2$coefficients
+#-------------------------------------------------------------------------------
 #------------------------------------------------------------------------------#
 # Loop over different factor levels...
 
