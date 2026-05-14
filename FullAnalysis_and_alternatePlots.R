@@ -419,6 +419,8 @@ p_desc <- ggplot(desc_df, aes(x = Migratory, y = Prop, fill = interaction(Migrat
     plot.title = element_text(face = "bold")
   )
 
+p_desc
+
 # ── Fit models ──────────────────────────────────────────────────────────
 # Basic GLMs
 m1  <- glm(decline ~ migratory, family = binomial, data = data)
