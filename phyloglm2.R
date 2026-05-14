@@ -143,6 +143,38 @@ summary(m1a)
 m1b <- glm(decline ~ migratory * EOO_log_cent, family = binomial, data)
 summary(m1b)
 
+#-------------------------------------------------------------------------------
+# decline ~ migratory with phylo signal
+#Fit in parallel...
+plan(multisession, workers = 50)
+
+m1p <- glm(decline ~ migratory, family = binomial, data)
+m1p$coefficients
+startB <- m1p$coefficients
+startA <- 0.5
+
+# Wrap the call to reduce what gets exported to workers
+fit_phylo_mig <- phyloglm(
+  decline ~ migratory,
+  data = data, phy = tree,
+  method = "logistic_MPLE",
+  btol = 50, 
+  log.alpha.bound = 4,
+  boot = 1000,
+  save = TRUE,
+  #full.matrix = TRUE,
+  start.beta = startB,
+  start.alpha = startA
+)
+
+summary(fit_phylo_mig)
+
+saveRDS(fit_phyloMig , "Outputs/fit_phyloMig_scaledT.rds")
+
+#-------------------------------------------------------------------------------
+
+
+
 
 #-----------------------------------------------------------------------------#
 # Try with combined Hem/Flyway
